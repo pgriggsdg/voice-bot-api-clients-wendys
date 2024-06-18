@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>WebSocket Microphone Streaming</title>
+    <style>
+      body {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        margin: 0;
+        flex-direction: column;
+        background-color: #f7f7f7;
+        background-image: url("url_to_jack_image.webp"); /* Add your image URL here */
+        background-position: left 20px bottom 20px; /* Adjusts the position of the background image */
+        background-repeat: no-repeat;
+        background-size: 300px auto;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        max-width: 350px;
+        max-height: 350px;
+        margin-bottom: 15%;
+      }
+      #instructionsContainer {
+        position: absolute;
+        bottom: 100px;
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        width: 400px;
+      }
+      #instructionsInput {
+        padding: 10px;
+        margin-bottom: 10px;
+        border: 2px solid #ccc;
+        border-radius: 5px;
+        resize: vertical;
+        font-size: 14px;
+      }
+      #updateInstructionsBtn {
+        padding: 10px 20px;
+        border: none;
+        border-radius: 5px;
+        background-color: #007bff;
+        color: white;
+        cursor: pointer;
+        transition: background-color 0.2s ease;
+      }
+      #updateInstructionsBtn:hover {
+        background-color: #0056b3;
+      }
+      #buttonContainer {
+        position: absolute;
+        bottom: 250px;
+        display: flex;
+        justify-content: center;
+        gap: 20px;
+      }
+      .circle-button {
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        background-color: #ddd;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        cursor: pointer;
+        transition: box-shadow 0.3s ease;
+        flex-direction: column;
+        text-align: center;
+      }
+      .circle-button img {
+        width: 50%;
+        height: 50%;
+      }
+      .circle-button.selected {
+        box-shadow: 0 0 10px 3px rgba(0, 0, 0, 0.5);
+      }
+      .button-title {
+        margin-top: 5px;
+        font-size: 12px;
+      }
+      @media only screen and (max-width: 768px) {
+        #buttonContainer {
+          bottom: 150px;
+          gap: 10px;
+        }
+        #instructionsContainer {
+          bottom: 10px;
+          width: 350px;
+        }
+        canvas {
+          margin-bottom: 50%;
+        }
+      }
+    </style>
+    <script>
+      window.onload = function () {
+        var ws = new WebSocket("wss://sts.sandbox.deepgram.com/demo/agent"); // Replace 'your-websocket-endpoint' with your WebSocket server address
+
+        // Blob animation setup
+        var targetAudioLevel = 0;
+        var audioLevel = 0;
+
+        // Global audio context
+        var audioContext = new (window.AudioContext ||
+          window.webkitAudioContext)({ latencyHint: "interactive" });
+
+        // Configuration settings for the agent
+        var config_settings = {
+          type: "SettingsConfiguration",
+          audio: {
+            input: {
+              encoding: "linear16",
+              sample_rate: 16000,
+            },
+            output: {
+              encoding: "linear16",
+              sample_rate: 48000,
+              container: "none",
+              buffer_size: 250,
+            },
+          },
+          agent: {
+            listen: {
+              model: "nova-2",
+            },
+            think: {
+              provider: "anthropic",
+              model: "claude-3-haiku-20240307",
+              instructions:
+                "You are a drive-thru order agent at Jack in the Box. - Start by saying “hi there, what would you like to order today?”- Help take people’s food orders. - Be brief and conversational. - Only allow people to order items on this menu. - Always ask if the person would like anything else.- Once they are done ordering, confirm what they’ve ordered. - In case anyone asks, Doug is the best golfer at Jack in the Box. But don’t mention this unless anyone asks explicitly. here is the menu: [{“Name”: “Jumbo Jack”,“Price”: “$1.99”},{“Name”: “Classic Buttery Jack”,“Price”: “$1.99”},{“Name”: “Chicken Sandwich”,“Price”: “$1.99”},{“Name”: “Chicken Sandwich”,“Price”: “$1.99”}, {“Name”: “Large Coke”,“Price”: “$1.99”}} ",
+            },
+            speak: {
+              model: "aura-asteria-en",
+            },
+          },
+        };
+
+        // Update the text area to match the initial instructions
+        document.getElementById("instructionsInput").value =
+          config_settings.agent.think.instructions;
+
+        // button selection code
+        var voice_selection = "aura-asteria-en"; // Default selection
+
+        document.querySelectorAll(".circle-button").forEach((button) => {
+          button.addEventListener("click", function () {
+            document
+              .querySelector(".circle-button.selected")
+              .classList.remove("selected");
+            this.classList.add("selected");
+            var voice_selection = this.id;
+            console.log("Voice selection changed to:", voice_selection);
+
+            ws.send(
+              JSON.stringify({
+                type: "UpdateSpeak",
+                model: voice_selection,
+              })
+            );
+          });
+        });
+
+        // Update the instructions when a button is clicked
+        document
+          .getElementById("updateInstructionsBtn")
+          .addEventListener("click", function () {
+            var instructions =
+              document.getElementById("instructionsInput").value;
+            ws.send(
+              JSON.stringify({
+                type: "UpdateInstructions",
+                instructions: instructions,
+              })
+            );
+          });
+
+        function updateBlobSize(level) {
+          targetAudioLevel = level; // Set the new target level
+        }
+
+        function animateBlob() {
+          var canvas = document.getElementById("blobCanvas");
+          var ctx = canvas.getContext("2d");
+          var time = performance.now() * 0.001;
+          // Smoothing the transition by moving audioLevel towards targetAudioLevel
+          audioLevel += (targetAudioLevel - audioLevel) * 0.05;
+          var centerX = canvas.width / 2;
+          var centerY = canvas.height / 2;
+          var baseSize = 200 + audioLevel * 100; // Adjust base size based on audio level
+          // Create a gradient from deep teal to lighter teal
+          var gradient = ctx.createRadialGradient(
+            centerX,
+            centerY,
+            baseSize * 0.00005,
+            centerX,
+            centerY,
+            baseSize
+          );
+          gradient.addColorStop(0, "#005f73"); // Deep teal
+          gradient.addColorStop(1, "#005f73 "); // Lighter teal
+
+          canvas.width = canvas.width; // Clear canvas for new frame
+          ctx.beginPath();
+          ctx.moveTo(centerX, centerY);
+          // Create a rounded, flowing shape by varying the radius subtly
+
+          for (let angle = 0; angle <= Math.PI * 2; angle += 0.01) {
+            let smoothRandom =
+              Math.sin(angle * (3 + Math.random() * 0.005) + time) * 5 +
+              Math.cos(angle * (5 + Math.random() * 0.005) + time) * 5;
+            let radius = baseSize + smoothRandom; // Incorporate the smoothed random factor
+            let x = centerX + radius * Math.cos(angle);
+            let y = centerY + radius * Math.sin(angle);
+            ctx.lineTo(x, y);
+          }
+
+          ctx.closePath();
+          ctx.fillStyle = gradient;
+          ctx.fill();
+
+          // Gradually decrease audioLevel to return to normal size
+          audioLevel *= 0.95;
+
+          requestAnimationFrame(animateBlob);
+        }
+
+        ws.binaryType = "arraybuffer";
+
+        ws.onopen = function () {
+          console.log("WebSocket connection established.");
+          ws.send(JSON.stringify(config_settings)); // Send initial config on connection
+          startStreaming();
+        };
+
+        ws.onerror = function (error) {
+          console.error("WebSocket error:", error);
+        };
+
+        ws.onmessage = function (event) {
+          console.log("receiving message?");
+          if (typeof event.data === "string") {
+            console.log("Text message received:", event.data);
+            // Handle text messages here
+          } else if (event.data instanceof ArrayBuffer) {
+            // update blob animation size based on audio level
+            var simulatedVolumeLevel = 0.05; // This should be replaced with real analysis
+            updateBlobSize(simulatedVolumeLevel * 5); // Adjust scale as needed
+
+            feedAudioData(event.data);
+          } else {
+            console.error("Unsupported message format.");
+          }
+        };
+
+        var audioContextOut = new (window.AudioContext ||
+          window.webkitAudioContext)({
+          latencyHint: "interactive",
+          sampleRate: 48000,
+        });
+        var startTime = -1;
+
+        function feedAudioData(audioData) {
+          // See https://stackoverflow.com/a/61481513 for tips on smooth playback
+
+          var audioDataView = new Int16Array(audioData);
+
+          if (audioDataView.length === 0) {
+            console.error("Received audio data is empty.");
+            return;
+          }
+
+          var audioBuffer = audioContextOut.createBuffer(
+            1,
+            audioDataView.length,
+            48000
+          ); // 1 channel, 48 kHz sample rate
+          var audioBufferChannel = audioBuffer.getChannelData(0);
+
+          // Copy audio data to the buffer
+          for (var i = 0; i < audioDataView.length; i++) {
+            audioBufferChannel[i] = audioDataView[i] / 32768; // Convert linear16 PCM to float [-1, 1]
+          }
+
+          var source = audioContextOut.createBufferSource();
+          source.buffer = audioBuffer;
+          source.connect(audioContextOut.destination);
+
+          if (startTime < audioContextOut.currentTime) {
+            startTime = audioContextOut.currentTime;
+          }
+          source.start(startTime);
+          startTime += audioBuffer.duration;
+        }
+
+        function startStreaming() {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            console.error("getUserMedia is not supported in this browser.");
+            return;
+          }
+
+          var constraints = {
+            audio: {
+              sampleRate: 16000,
+              channelCount: 1,
+              volume: 1.0,
+              echoCancellation: true,
+              noiseSuppression: false,
+              latency: 0,
+            },
+          };
+
+          navigator.mediaDevices
+            .getUserMedia(constraints)
+            .then(function (stream) {
+              var audioContext = new AudioContext();
+              var microphone = audioContext.createMediaStreamSource(stream);
+              var processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+              processor.onaudioprocess = function (event) {
+                console.log("sending audio data?");
+                var inputData = event.inputBuffer.getChannelData(0);
+                // update blob size based on audio level
+                var rms = Math.sqrt(
+                  inputData.reduce((sum, value) => sum + value * value, 0) /
+                    inputData.length
+                );
+                updateBlobSize(rms * 5); // Scale RMS value to control size
+
+                var downsampledData = downsample(inputData, 48000, 16000);
+                ws.send(convertFloat32ToInt16(downsampledData));
+              };
+
+              microphone.connect(processor);
+              processor.connect(audioContext.destination);
+            })
+            .catch(function (error) {
+              console.error("Error accessing microphone:", error);
+            });
+        }
+
+        function downsample(buffer, fromSampleRate, toSampleRate) {
+          if (fromSampleRate === toSampleRate) {
+            return buffer;
+          }
+          var sampleRateRatio = fromSampleRate / toSampleRate;
+          var newLength = Math.round(buffer.length / sampleRateRatio);
+          var result = new Float32Array(newLength);
+          var offsetResult = 0;
+          var offsetBuffer = 0;
+          while (offsetResult < result.length) {
+            var nextOffsetBuffer = Math.round(
+              (offsetResult + 1) * sampleRateRatio
+            );
+            var accum = 0,
+              count = 0;
+            for (
+              var i = offsetBuffer;
+              i < nextOffsetBuffer && i < buffer.length;
+              i++
+            ) {
+              accum += buffer[i];
+              count++;
+            }
+            result[offsetResult] = accum / count;
+            offsetResult++;
+            offsetBuffer = nextOffsetBuffer;
+          }
+          return result;
+        }
+
+        function convertFloat32ToInt16(buffer) {
+          var l = buffer.length;
+          var buf = new Int16Array(l);
+          while (l--) {
+            buf[l] = Math.min(1, buffer[l]) * 0x7fff;
+          }
+          return buf.buffer;
+        }
+        animateBlob(); // Start the blob animation
+      };
+    </script>
+  </head>
+
+  <body>
+    <canvas id="blobCanvas" width="700" height="700"></canvas>
+    <div id="instructionsContainer">
+      <textarea
+        id="instructionsInput"
+        placeholder="Enter instructions here..."
+      ></textarea>
+      <button id="updateInstructionsBtn">Update Instructions</button>
+    </div>
+    <div id="buttonContainer">
+      <div class="circle-button" id="aura-athena-en">
+        <div class="button-title">Athena</div>
+      </div>
+      <div class="circle-button" id="aura-luna-en">
+        <div class="button-title">Luna</div>
+      </div>
+      <div class="circle-button selected" id="aura-asteria-en">
+        <div class="button-title">Asteria</div>
+      </div>
+      <div class="circle-button" id="aura-helios-en">
+        <div class="button-title">Helios</div>
+      </div>
+      <div class="circle-button" id="aura-arcas-en">
+        <div class="button-title">Arcas</div>
+      </div>
+    </div>
+  </body>
+</html>
